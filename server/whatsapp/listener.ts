@@ -1,7 +1,7 @@
 import { whatsappClient, sendMessage } from './client.js';
 import { supabaseAdmin } from '../config/supabaseAdmin.js';
 import { processFinanceChat, analyzeFinances } from '../services/financeAiService.js';
-import { addUserMessage, addAssistantMessage, getConversationHistory } from '../services/conversationStore.js';
+import { addUserMessage, addAssistantMessage, getConversationHistory, setPendingAction, getPendingAction, clearPendingAction, isConfirmation, isRejection } from '../services/conversationStore.js';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { handleOnboardingMessage } from './onboardingFlow.js';
