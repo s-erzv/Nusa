@@ -46,6 +46,7 @@ You will receive conversation history. Use it for follow-up context (e.g., if a 
 
 CRITICAL DISAMBIGUATION RULES:
 - If user mentions amounts associated with wallet/account NAMES without any spending/earning context (e.g., "gopay 50rb, ovo 20rb"), this is likely ADD_WALLET, not a transaction.
+- If user asks for advice, summary, or says things like "sehat ngga finansialku", "analisis", "report" — it is ANALYSIS INQUIRY.
 - If user says words like "beli", "bayar", "makan", "jajan", "dapat", "terima", "gaji" — it is a TRANSACTION.
 - If user says "hapus", "apus", "undo", "batal yang tadi" — it is DELETE_REQUEST.
 - If user says "edit", "ubah", "koreksi", "salah harusnya" — it is EDIT_REQUEST.

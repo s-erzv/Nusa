@@ -162,6 +162,56 @@ export const setupWhatsAppListener = () => {
           await chat.sendStateTyping();
         }
 
+        // ──────────────────────────────────────────────
+        // STEP 1: Check if there's a pending action awaiting confirmation
+        // This must run BEFORE the AI call so "iya" doesn't get sent to AI
+        // ──────────────────────────────────────────────
+        const pendingAction = getPendingAction(userId);
+        if (pendingAction) {
+          addUserMessage(userId, text);
+          
+          if (isConfirmation(text)) {
+            clearPendingAction(userId);
+
+            if (pendingAction.type === 'delete_transaction' && pendingAction.transactionId) {
+              // Revert wallet balance
+              const { data: walletToRevert } = await supabaseAdmin
+                .from('wallets').select('id, balance').eq('user_id', userId)
+                .ilike('name', pendingAction.transactionPaymentMethod || '').maybeSingle();
+
+              if (walletToRevert) {
+                const revertedBalance = pendingAction.transactionType === 'expense'
+                  ? Number(walletToRevert.balance) + Number(pendingAction.transactionAmount)
+                  : Number(walletToRevert.balance) - Number(pendingAction.transactionAmount);
+                await supabaseAdmin.from('wallets').update({ balance: revertedBalance }).eq('id', walletToRevert.id);
+              }
+              
+              await supabaseAdmin.from('transactions').delete().eq('id', pendingAction.transactionId);
+              await reply(message, userId, `Oke, transaksi "${pendingAction.transactionDescription}" (${formatIDR(pendingAction.transactionAmount || 0)}) sudah dihapus dan saldo wallet dikembalikan.`);
+
+            } else if (pendingAction.type === 'add_wallets' && pendingAction.wallets) {
+              const inserts = pendingAction.wallets.map(w => ({ user_id: userId, ...w }));
+              const { error } = await supabaseAdmin.from('wallets').insert(inserts);
+              if (error) {
+                await reply(message, userId, "Gagal menyimpan wallet. Coba lagi ya.");
+              } else {
+                const lines = pendingAction.wallets.map(w => `- ${w.name}: ${formatIDR(w.balance)}`).join('\n');
+                await reply(message, userId, `Wallet berhasil ditambahkan:\n${lines}`);
+              }
+            }
+
+            return; // Done, don't send to AI
+          }
+          
+          if (isRejection(text)) {
+            clearPendingAction(userId);
+            await reply(message, userId, "Oke, dibatalin. Ada yang lain?");
+            return;
+          }
+
+          // Not a clear confirmation or rejection, fall through to AI with context
+        }
+
         // Store user message in conversation memory
         addUserMessage(userId, text);
         const history = getConversationHistory(userId);
@@ -291,7 +341,7 @@ export const setupWhatsAppListener = () => {
           await reply(message, userId, analysis);
 
         // ──────────────────────────────────────────────
-        // INTENT: Delete Last Transaction
+        // INTENT: Delete Last Transaction → SET PENDING, ask confirmation
         // ──────────────────────────────────────────────
         } else if (financeResponse.isDeleteRequest) {
           // Find last transaction
@@ -308,25 +358,17 @@ export const setupWhatsAppListener = () => {
             return;
           }
 
-          // Revert wallet balance
-          const { data: wallet } = await supabaseAdmin
-            .from('wallets')
-            .select('id, balance')
-            .eq('user_id', userId)
-            .ilike('name', lastTx.payment_method || '')
-            .maybeSingle();
+          // Store pending action — actual delete happens when user confirms
+          setPendingAction(userId, {
+            type: 'delete_transaction',
+            transactionId: lastTx.id,
+            transactionDescription: lastTx.description,
+            transactionAmount: Number(lastTx.amount),
+            transactionPaymentMethod: lastTx.payment_method,
+            transactionType: lastTx.type,
+          });
 
-          if (wallet) {
-            const revertedBalance = lastTx.type === 'expense'
-              ? Number(wallet.balance) + Number(lastTx.amount)
-              : Number(wallet.balance) - Number(lastTx.amount);
-            await supabaseAdmin.from('wallets').update({ balance: revertedBalance }).eq('id', wallet.id);
-          }
-
-          // Delete the transaction
-          await supabaseAdmin.from('transactions').delete().eq('id', lastTx.id);
-
-          await reply(message, userId, `Transaksi terakhir sudah dihapus:\n- ${lastTx.description} (${formatIDR(Number(lastTx.amount))} via ${lastTx.payment_method})\n\nSaldo wallet sudah dikembalikan.`);
+          await reply(message, userId, `Oke, mau hapus transaksi ini?\n- ${lastTx.description || lastTx.category} (${formatIDR(Number(lastTx.amount))} via ${lastTx.payment_method})\n\nBalas "iya" untuk konfirmasi, atau "ga" untuk batal.`);
 
         // ──────────────────────────────────────────────
         // INTENT: Edit Last Transaction
@@ -352,35 +394,63 @@ export const setupWhatsAppListener = () => {
           }
 
           const updatePayload: any = {};
-          let diffAmount = 0;
+          let amountChanged = false;
+          let paymentMethodChanged = false;
+          let newAmount = Number(lastTx.amount);
+          let newPaymentMethod = lastTx.payment_method;
 
           if (editData.field === 'amount' && typeof editData.newValue === 'number') {
-            diffAmount = editData.newValue - Number(lastTx.amount);
+            amountChanged = true;
+            newAmount = editData.newValue;
             updatePayload.amount = editData.newValue;
           } else if (editData.field === 'category') {
             updatePayload.category = editData.newValue;
           } else if (editData.field === 'payment_method') {
-            updatePayload.payment_method = editData.newValue;
+            paymentMethodChanged = true;
+            newPaymentMethod = String(editData.newValue);
+            updatePayload.payment_method = newPaymentMethod;
           }
 
           await supabaseAdmin.from('transactions').update(updatePayload).eq('id', lastTx.id);
 
-          // Adjust wallet balance if amount changed
-          if (diffAmount !== 0 && lastTx.payment_method) {
-            const { data: wallet } = await supabaseAdmin
-              .from('wallets')
-              .select('id, balance')
-              .eq('user_id', userId)
-              .ilike('name', lastTx.payment_method)
-              .maybeSingle();
+          // Adjust wallet balances if amount OR payment method changed
+          if (amountChanged || paymentMethodChanged) {
+            // First, revert the old transaction effect from the old wallet
+            if (lastTx.payment_method) {
+              const { data: oldWallet } = await supabaseAdmin
+                .from('wallets').select('id, balance').eq('user_id', userId).ilike('name', lastTx.payment_method).maybeSingle();
+              if (oldWallet) {
+                const revertAdj = lastTx.type === 'expense' ? Number(lastTx.amount) : -Number(lastTx.amount);
+                await supabaseAdmin.from('wallets').update({ balance: Number(oldWallet.balance) + revertAdj }).eq('id', oldWallet.id);
+              }
+            }
 
-            if (wallet) {
-              const adjustment = lastTx.type === 'expense' ? -diffAmount : diffAmount;
-              await supabaseAdmin.from('wallets').update({ balance: Number(wallet.balance) + adjustment }).eq('id', wallet.id);
+            // Then, apply the new transaction effect to the new (or same) wallet
+            if (newPaymentMethod) {
+              const { data: currentWallet } = await supabaseAdmin
+                .from('wallets').select('id, balance').eq('user_id', userId).ilike('name', newPaymentMethod).maybeSingle();
+              if (currentWallet) {
+                const applyAdj = lastTx.type === 'expense' ? -newAmount : newAmount;
+                await supabaseAdmin.from('wallets').update({ balance: Number(currentWallet.balance) + applyAdj }).eq('id', currentWallet.id);
+              }
             }
           }
 
-          await reply(message, userId, `Transaksi sudah diupdate!\n${financeResponse.replyMessage || ''}`);
+          await reply(message, userId, `Transaksi sudah diupdate! ${financeResponse.replyMessage || ''}`);
+
+        // ──────────────────────────────────────────────
+        // INTENT: Add Wallet(s) — ask confirmation first
+        // ──────────────────────────────────────────────
+        } else if (financeResponse.isAddWallet) {
+          const wallets = financeResponse.wallets;
+          if (!wallets || wallets.length === 0) {
+            await reply(message, userId, "Aku kurang paham wallet apa yang mau ditambahkan. Bisa disebutkan lagi nama dan saldonya?");
+            return;
+          }
+
+          const lines = wallets.map((w: any) => `- ${w.name} (${w.type}): ${formatIDR(w.balance)}`).join('\n');
+          setPendingAction(userId, { type: 'add_wallets', wallets });
+          await reply(message, userId, `Oke, mau tambahkan wallet berikut?\n${lines}\n\nBalas "iya" untuk konfirmasi.`);
 
         // ──────────────────────────────────────────────
         // INTENT: Transfer Between Wallets
@@ -418,25 +488,12 @@ export const setupWhatsAppListener = () => {
           await reply(message, userId, `Transfer berhasil!\n\n${srcWallet.name}: ${formatIDR(Number(srcWallet.balance) - amount)}\n${dstWallet.name}: ${formatIDR(Number(dstWallet.balance) + amount)}`);
 
         // ──────────────────────────────────────────────
-        // INTENT: Wallet Management (add/remove/rename)
+        // INTENT: Wallet Management (rename/remove)
         // ──────────────────────────────────────────────
         } else if (financeResponse.isWalletManagement) {
-          const { action, walletName, walletType, newName, balance } = financeResponse;
+          const { action, walletName, newName } = financeResponse;
 
-          if (action === 'add') {
-            const { error } = await supabaseAdmin.from('wallets').insert({
-              user_id: userId,
-              name: walletName,
-              type: walletType || 'cash',
-              balance: balance || 0,
-            });
-            if (error) {
-              await reply(message, userId, "Gagal menambahkan wallet. Coba lagi nanti ya.");
-            } else {
-              await reply(message, userId, `Wallet "${walletName}" berhasil ditambahkan${balance ? ` dengan saldo awal ${formatIDR(balance)}` : ''}.`);
-            }
-
-          } else if (action === 'remove') {
+          if (action === 'remove') {
             const { data: existing } = await supabaseAdmin.from('wallets').select('id').eq('user_id', userId).ilike('name', walletName).maybeSingle();
             if (!existing) {
               await reply(message, userId, `Wallet "${walletName}" ga ketemu.`);

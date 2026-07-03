@@ -11,15 +11,23 @@ interface ChatMessage {
 }
 
 export interface PendingAction {
-  type: 'delete_transaction' | 'add_wallets';
-  // For delete_transaction: the transaction to delete
+  type: 'delete_transaction' | 'add_wallets' | 'edit_transaction';
+  // For delete_transaction
   transactionId?: string;
   transactionDescription?: string;
   transactionAmount?: number;
   transactionPaymentMethod?: string;
   transactionType?: string;
-  // For add_wallets: the wallets to add
+  // For add_wallets
   wallets?: { name: string; type: string; balance: number }[];
+  // For edit_transaction
+  editTransactionId?: string;
+  editField?: 'amount' | 'category' | 'payment_method';
+  editNewValue?: string | number;
+  editOldAmount?: number;
+  editWalletName?: string;
+  editTransactionType?: string;
+  editConfirmMessage?: string;
   timestamp: number;
 }
 
@@ -82,7 +90,7 @@ export const clearConversation = (userId: string) => {
 // Detect if text is a confirmation
 export const isConfirmation = (text: string): boolean => {
   const lower = text.toLowerCase().trim();
-  return ['iya', 'ya', 'yep', 'yes', 'oke', 'ok', 'sip', 'boleh', 'setuju', 'yoi', 'yup'].some(w => lower === w || lower.startsWith(w + ' ') || lower.endsWith(' ' + w));
+  return ['iya', 'ya', 'yep', 'yap', 'yes', 'oke', 'ok', 'sip', 'boleh', 'setuju', 'yoi', 'yup', 'gas', 'lanjut'].some(w => lower === w || lower.startsWith(w + ' ') || lower.endsWith(' ' + w));
 };
 
 // Detect if text is a rejection
