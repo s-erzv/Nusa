@@ -1,14 +1,12 @@
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
-export interface InitiateLoginResponse {
+export interface RequestOtpResponse {
   success: boolean;
-  loginCode?: string;
   message?: string;
 }
 
-export interface LoginStatusResponse {
+export interface VerifyOtpResponse {
   success: boolean;
-  status: 'pending' | 'verified' | 'expired';
   session?: {
     access_token: string;
     refresh_token: string;
@@ -16,43 +14,31 @@ export interface LoginStatusResponse {
   message?: string;
 }
 
-export interface BotInfoResponse {
-  success: boolean;
-  phone?: string;
-  message?: string;
-}
-
-export const initiateLogin = async (): Promise<InitiateLoginResponse> => {
-  const response = await fetch(`${API_BASE}/api/auth/initiate-login`, {
+export const requestOtp = async (phone: string): Promise<RequestOtpResponse> => {
+  const response = await fetch(`${API_BASE}/api/auth/request-otp`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone }),
   });
   
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.message || 'Failed to initiate login');
+    throw new Error(errorData.message || 'Failed to request OTP');
   }
   
   return response.json();
 };
 
-export const checkLoginStatus = async (code: string): Promise<LoginStatusResponse> => {
-  const response = await fetch(`${API_BASE}/api/auth/login-status/${code}`);
+export const verifyOtp = async (phone: string, otp: string): Promise<VerifyOtpResponse> => {
+  const response = await fetch(`${API_BASE}/api/auth/verify-otp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone, otp }),
+  });
   
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.message || 'Failed to check login status');
-  }
-  
-  return response.json();
-};
-
-export const getBotInfo = async (): Promise<BotInfoResponse> => {
-  const response = await fetch(`${API_BASE}/api/auth/bot-info`);
-  
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.message || 'Failed to get bot info');
+    throw new Error(errorData.message || 'Failed to verify OTP');
   }
   
   return response.json();

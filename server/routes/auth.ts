@@ -1,10 +1,9 @@
 import { Router } from 'express';
-import { initiateLogin, loginStatus, getBotInfo } from '../controllers/authController.js';
+import { requestOtp, verifyOtp } from '../controllers/authController.js';
 
 const router = Router();
 
-router.post('/initiate-login', initiateLogin);
-router.get('/login-status/:code', loginStatus);
-router.get('/bot-info', getBotInfo);
+router.post('/request-otp', requestOtp);
+router.post('/verify-otp', verifyOtp);
 
 export default router;

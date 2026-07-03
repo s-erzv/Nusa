@@ -6,12 +6,23 @@ const { Client, LocalAuth } = pkg;
 export const whatsappClient = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
+    headless: false, // Buka browser agar bisa melihat langsung prosesnya (bagus untuk debugging)
     executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+    ],
+    protocolTimeout: 0,
   }
 });
 
 let isReady = false;
+
+whatsappClient.on('loading_screen', (percent: number, message: string) => {
+  console.log(`[WhatsApp Loading] ${percent}%: ${message}`);
+});
 
 whatsappClient.on('qr', (qr: string) => {
   console.log('Scan the QR code below to authenticate WhatsApp Client:');

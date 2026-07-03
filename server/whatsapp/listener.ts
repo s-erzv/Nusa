@@ -96,16 +96,16 @@ export const setupWhatsAppListener = () => {
       }
 
       // 3. MAGIC MESSAGE AUTH INTERCEPTOR
-      // If the message is a login code (e.g. NUSA-1234)
-      const authMatch = text.match(/^NUSA-\d{4}$/i);
+      // If the message is a login code (e.g. Login Nusa: 123456)
+      const authMatch = text.match(/^Login Nusa:\s*(.+)$/i);
       if (authMatch) {
-        const loginCode = authMatch[0].toUpperCase();
+        const loginCode = authMatch[1].trim();
         
         // Find if this code is pending in the DB
         const { data: sessionInfo } = await supabaseAdmin
-          .from('whatsapp_auth_sessions')
+          .from('auth_requests')
           .select('id, status, expires_at')
-          .eq('login_code', loginCode)
+          .eq('login_id', loginCode)
           .single();
 
         if (sessionInfo && sessionInfo.status === 'pending' && new Date(sessionInfo.expires_at) >= new Date()) {
@@ -114,7 +114,7 @@ export const setupWhatsAppListener = () => {
           
           const payload = {
             aud: 'authenticated',
-            exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24), // 24 hours
+            exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24 * 7), // 7 days
             sub: userId,
             phone: realPhone,
             role: 'authenticated',
@@ -122,15 +122,16 @@ export const setupWhatsAppListener = () => {
           const token = jwt.sign(payload, jwtSecret);
 
           await supabaseAdmin
-            .from('whatsapp_auth_sessions')
+            .from('auth_requests')
             .update({
-              status: 'verified',
-              phone: realPhone,
-              session_jwt: token,
+              status: 'completed',
+              phone_number: realPhone,
+              access_token: token,
+              refresh_token: token,
             })
             .eq('id', sessionInfo.id);
 
-          await message.reply('Login successful!');
+          await message.reply('Login berhasil! Silakan kembali ke browser.');
           
           // Auto-trigger onboarding if they haven't completed it
           const status = profile?.onboarding_status || 'pending';
@@ -140,9 +141,9 @@ export const setupWhatsAppListener = () => {
           return; // Stop processing, this was an auth message
         }
         
-        // If code is expired or invalid, fall through or send error (we'll just send an error here)
+        // If code is expired or invalid, fall through or send error
         if (sessionInfo) {
-          await message.reply('Login code expired or already used. Please request a new one on the website.');
+          await message.reply('Kode login tidak valid atau sudah kadaluarsa. Silakan request ulang di website.');
           return;
         }
       }
@@ -223,308 +224,249 @@ export const setupWhatsAppListener = () => {
           return;
         }
 
-        // ──────────────────────────────────────────────
-        // INTENT: Complete Transaction
-        // ──────────────────────────────────────────────
-        if (financeResponse.isFinanceRecord && financeResponse.isComplete && financeResponse.data) {
-          const { amount, type, category, description, payment_method } = financeResponse.data;
+                // Loop through the actions parsed by AI
+        for (const action of financeResponse.actions) {
           
-          // Save to transactions table
-          const { error: insertError } = await supabaseAdmin.from('transactions').insert({
-            user_id: userId,
-            amount,
-            type,
-            category,
-            description,
-            payment_method
-          });
-
-          if (insertError) {
-            console.error(`[WhatsApp] Failed to insert transaction for ${userId}:`, insertError);
-            await reply(message, userId, "Waduh, ada error pas nyimpen datanya nih. Coba lagi nanti ya.");
-            return;
+          if (action.type === 'IDLE_CONFIRMATION') {
+            await reply(message, userId, action.replyMessage || "Sip, sudah dicatat!");
           }
-
-          // Auto-update wallet balance
-          const { data: wallet } = await supabaseAdmin
-            .from('wallets')
-            .select('id, balance')
-            .eq('user_id', userId)
-            .ilike('name', payment_method)
-            .maybeSingle();
-
-          if (wallet) {
-            const newBalance = type === 'expense' 
-              ? Number(wallet.balance) - amount 
-              : Number(wallet.balance) + amount;
-            await supabaseAdmin.from('wallets').update({ balance: newBalance }).eq('id', wallet.id);
-          }
-
-          const formattedAmount = formatIDR(amount);
-          let replyText = `Berhasil dicatat!\n\nKategori: ${category}\nJumlah: ${formattedAmount}\nMetode: ${payment_method}\nCatatan: ${description}`;
-
-          // Budget alert check
-          if (type === 'expense' && profile?.monthly_budget) {
-            const now = new Date();
-            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-            
-            const { data: monthlyTxs } = await supabaseAdmin
-              .from('transactions')
-              .select('amount')
-              .eq('user_id', userId)
-              .eq('type', 'expense')
-              .gte('created_at', startOfMonth);
-
-            const totalExpenseThisMonth = (monthlyTxs || []).reduce((sum: number, tx: any) => sum + Number(tx.amount), 0);
-            const budget = Number(profile.monthly_budget);
-            const percentage = Math.round((totalExpenseThisMonth / budget) * 100);
-
-            if (totalExpenseThisMonth >= budget) {
-              replyText += `\n\n-- Peringatan --\nKamu sudah melewati batas pengeluaran bulan ini (${percentage}% dari budget ${formatIDR(budget)}). Hati-hati ya!`;
-            } else if (percentage >= 80) {
-              replyText += `\n\n-- Perhatian --\nPengeluaranmu bulan ini sudah ${percentage}% dari budget ${formatIDR(budget)}. Mulai hati-hati ya.`;
+          
+          else if (action.type === 'UPDATE_BALANCE') {
+            const { walletName, amount } = action;
+            if (!walletName || amount === undefined) {
+              await reply(message, userId, "Mau update saldo wallet apa dan jadi berapa?");
+              continue;
             }
+            const { data: wallet } = await supabaseAdmin.from('wallets').select('id, name').eq('user_id', userId).ilike('name', walletName).maybeSingle();
+            if (!wallet) {
+              await reply(message, userId, `Wallet "${walletName}" ga ketemu.`);
+              continue;
+            }
+            await supabaseAdmin.from('wallets').update({ balance: amount }).eq('id', wallet.id);
+            await reply(message, userId, `Transaksi sudah diupdate! Saldo ${wallet.name} berhasil direset menjadi ${formatIDR(amount)}.`);
+          }
+          
+          else if (action.type === 'ADD_ROUTINE_EXPENSE') {
+            const { description, amount, due_date_day, transaction_type } = action;
+            if (!description || !amount || !due_date_day) {
+              await reply(message, userId, "Data langganan/cicilan kurang lengkap.");
+              continue;
+            }
+            await supabaseAdmin.from('routine_expenses').insert({
+              user_id: userId,
+              description,
+              amount,
+              due_date_day,
+              type: transaction_type || 'expense'
+            });
+            await reply(message, userId, `Sip! Pengeluaran rutin "${description}" sebesar ${formatIDR(amount)} setiap tanggal ${due_date_day} sudah ditambahkan ke jadwal.`);
+          }
+          
+          else if (action.type === 'ADD_DEBT') {
+            const { person_name, amount } = action;
+            if (!person_name || !amount) {
+              await reply(message, userId, "Siapa yang diutangin dan berapa jumlahnya?");
+              continue;
+            }
+            await supabaseAdmin.from('debts').insert({
+              user_id: userId, person_name, type: 'payable', amount
+            });
+            await reply(message, userId, `Catatan utang ke ${person_name} sebesar ${formatIDR(amount)} berhasil disimpan.`);
           }
 
-          await reply(message, userId, replyText);
+          else if (action.type === 'ADD_RECEIVABLE') {
+            const { person_name, amount } = action;
+            if (!person_name || !amount) {
+              await reply(message, userId, "Siapa yang ngutang ke kamu dan berapa jumlahnya?");
+              continue;
+            }
+            await supabaseAdmin.from('debts').insert({
+              user_id: userId, person_name, type: 'receivable', amount
+            });
+            await reply(message, userId, `Catatan piutang dari ${person_name} sebesar ${formatIDR(amount)} berhasil disimpan.`);
+          }
 
-        // ──────────────────────────────────────────────
-        // INTENT: Balance Inquiry (total or per-wallet)
-        // ──────────────────────────────────────────────
-        } else if (financeResponse.isBalanceInquiry) {
-          const walletName = financeResponse.walletName;
-          
-          if (walletName) {
-            // Per-wallet balance
-            const { data: wallet } = await supabaseAdmin
-              .from('wallets')
-              .select('name, balance')
-              .eq('user_id', userId)
-              .ilike('name', walletName)
-              .maybeSingle();
-
+          else if (action.type === 'PAY_DEBT') {
+            const { person_name, amount, walletName } = action;
+            if (!person_name || !amount || !walletName) {
+              await reply(message, userId, "Siapa yang dibayar, berapa jumlahnya, dan pakai wallet apa?");
+              continue;
+            }
+            const { data: debt } = await supabaseAdmin.from('debts').select('*').eq('user_id', userId).eq('type', 'payable').eq('status', 'unpaid').ilike('person_name', `%${person_name}%`).order('created_at', { ascending: true }).limit(1).maybeSingle();
+            if (debt) {
+              const newDebtAmt = Number(debt.amount) - amount;
+              if (newDebtAmt <= 0) await supabaseAdmin.from('debts').update({ status: 'paid', amount: 0 }).eq('id', debt.id);
+              else await supabaseAdmin.from('debts').update({ amount: newDebtAmt }).eq('id', debt.id);
+            }
+            const { data: wallet } = await supabaseAdmin.from('wallets').select('id, balance, name').eq('user_id', userId).ilike('name', walletName).maybeSingle();
             if (wallet) {
-              await reply(message, userId, `Saldo ${wallet.name} kamu saat ini ${formatIDR(Number(wallet.balance))}.`);
-            } else {
-              await reply(message, userId, `Hmm, aku ga nemu wallet dengan nama "${walletName}". Coba cek lagi nama walletnya.`);
+              await supabaseAdmin.from('wallets').update({ balance: Number(wallet.balance) - amount }).eq('id', wallet.id);
+              await supabaseAdmin.from('transactions').insert({ user_id: userId, amount, type: 'expense', category: 'Bayar Utang', description: `Bayar utang ke ${person_name}`, payment_method: wallet.name });
             }
-          } else {
-            // Total balance across all wallets
-            const { data: wallets } = await supabaseAdmin
-              .from('wallets')
-              .select('name, balance')
-              .eq('user_id', userId);
+            await reply(message, userId, `Sip, pembayaran utang ke ${person_name} sebesar ${formatIDR(amount)} pakai ${wallet ? wallet.name : walletName} sudah dicatat.`);
+          }
 
-            if (wallets && wallets.length > 0) {
-              let total = 0;
-              const breakdown = wallets.map(w => {
-                total += Number(w.balance);
-                return `- ${w.name}: ${formatIDR(Number(w.balance))}`;
-              }).join('\n');
-              
-              await reply(message, userId, `Total saldo kamu: ${formatIDR(total)}\n\nRincian:\n${breakdown}`);
-            } else {
-              await reply(message, userId, "Kamu belum punya wallet yang tercatat. Coba tambahkan dulu ya.");
+          else if (action.type === 'RECEIVE_DEBT_PAYMENT') {
+            const { person_name, amount, walletName } = action;
+            if (!person_name || !amount || !walletName) {
+              await reply(message, userId, "Siapa yang bayar, berapa jumlahnya, dan masuk ke wallet mana?");
+              continue;
             }
+            const { data: debt } = await supabaseAdmin.from('debts').select('*').eq('user_id', userId).eq('type', 'receivable').eq('status', 'unpaid').ilike('person_name', `%${person_name}%`).order('created_at', { ascending: true }).limit(1).maybeSingle();
+            if (debt) {
+              const newDebtAmt = Number(debt.amount) - amount;
+              if (newDebtAmt <= 0) await supabaseAdmin.from('debts').update({ status: 'paid', amount: 0 }).eq('id', debt.id);
+              else await supabaseAdmin.from('debts').update({ amount: newDebtAmt }).eq('id', debt.id);
+            }
+            const { data: wallet } = await supabaseAdmin.from('wallets').select('id, balance, name').eq('user_id', userId).ilike('name', walletName).maybeSingle();
+            if (wallet) {
+              await supabaseAdmin.from('wallets').update({ balance: Number(wallet.balance) + amount }).eq('id', wallet.id);
+              await supabaseAdmin.from('transactions').insert({ user_id: userId, amount, type: 'income', category: 'Piutang Dibayar', description: `${person_name} bayar utang`, payment_method: wallet.name });
+            }
+            await reply(message, userId, `Sip, uang masuk dari pembayaran utang ${person_name} sebesar ${formatIDR(amount)} ke ${wallet ? wallet.name : walletName} sudah dicatat.`);
           }
 
-        // ──────────────────────────────────────────────
-        // INTENT: Analysis Inquiry
-        // ──────────────────────────────────────────────
-        } else if (financeResponse.isAnalysisInquiry) {
-          await reply(message, userId, "Sebentar ya, aku lagi baca catatan keuanganmu...");
-          
-          const { data: wallets } = await supabaseAdmin.from('wallets').select('name, type, balance').eq('user_id', userId);
-          const { data: transactions } = await supabaseAdmin.from('transactions').select('amount, type, category, created_at, payment_method, description').eq('user_id', userId).order('created_at', { ascending: false });
-          
-          const analysis = await analyzeFinances(userId, transactions || [], wallets || []);
-          await reply(message, userId, analysis);
+          else if (action.type === 'RECORD_TRANSACTION') {
+            const { amount, transaction_type, category, description, payment_method } = action;
+            if (!amount || !category || !description || !payment_method || !transaction_type) {
+              await reply(message, userId, "Tunggu, ada info yang kurang (jumlah, untuk apa, atau pakai dompet apa). Bisa diperjelas?");
+              continue;
+            }
 
-        // ──────────────────────────────────────────────
-        // INTENT: Delete Last Transaction → SET PENDING, ask confirmation
-        // ──────────────────────────────────────────────
-        } else if (financeResponse.isDeleteRequest) {
-          // Find last transaction
-          const { data: lastTx } = await supabaseAdmin
-            .from('transactions')
-            .select('*')
-            .eq('user_id', userId)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
+            const { error: insertError } = await supabaseAdmin.from('transactions').insert({
+              user_id: userId, amount, type: transaction_type, category, description, payment_method
+            });
+            if (insertError) {
+              await reply(message, userId, "Waduh, ada error pas nyimpen datanya nih. Coba lagi nanti ya.");
+              continue;
+            }
 
-          if (!lastTx) {
-            await reply(message, userId, "Kamu belum punya transaksi yang bisa dihapus.");
-            return;
-          }
+            // Update wallet balance
+            const { data: wallet } = await supabaseAdmin.from('wallets').select('id, balance').eq('user_id', userId).ilike('name', payment_method).maybeSingle();
+            let currentTotalBalance = 0;
+            if (wallet) {
+              const newBalance = transaction_type === 'expense' ? Number(wallet.balance) - amount : Number(wallet.balance) + amount;
+              await supabaseAdmin.from('wallets').update({ balance: newBalance }).eq('id', wallet.id);
+            }
 
-          // Store pending action — actual delete happens when user confirms
-          setPendingAction(userId, {
-            type: 'delete_transaction',
-            transactionId: lastTx.id,
-            transactionDescription: lastTx.description,
-            transactionAmount: Number(lastTx.amount),
-            transactionPaymentMethod: lastTx.payment_method,
-            transactionType: lastTx.type,
-          });
+            // Get total balance for alerts
+            const { data: allWallets } = await supabaseAdmin.from('wallets').select('balance').eq('user_id', userId);
+            currentTotalBalance = (allWallets || []).reduce((sum, w) => sum + Number(w.balance), 0);
 
-          await reply(message, userId, `Oke, mau hapus transaksi ini?\n- ${lastTx.description || lastTx.category} (${formatIDR(Number(lastTx.amount))} via ${lastTx.payment_method})\n\nBalas "iya" untuk konfirmasi, atau "ga" untuk batal.`);
+            let replyText = `Berhasil dicatat!
 
-        // ──────────────────────────────────────────────
-        // INTENT: Edit Last Transaction
-        // ──────────────────────────────────────────────
-        } else if (financeResponse.isEditRequest) {
-          const { data: lastTx } = await supabaseAdmin
-            .from('transactions')
-            .select('*')
-            .eq('user_id', userId)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
+Kategori: ${category}
+Jumlah: ${formatIDR(amount)}
+Metode: ${payment_method}
+Catatan: ${description}`;
 
-          if (!lastTx) {
-            await reply(message, userId, "Kamu belum punya transaksi yang bisa diedit.");
-            return;
-          }
+            if (transaction_type === 'expense') {
+              if (amount > 0.3 * currentTotalBalance) {
+                replyText += `
 
-          const editData = financeResponse.editData;
-          if (!editData || !editData.field) {
-            await reply(message, userId, financeResponse.replyMessage || "Mau diedit bagian apanya? (nominal, kategori, atau metode pembayaran)");
-            return;
-          }
-
-          const updatePayload: any = {};
-          let amountChanged = false;
-          let paymentMethodChanged = false;
-          let newAmount = Number(lastTx.amount);
-          let newPaymentMethod = lastTx.payment_method;
-
-          if (editData.field === 'amount' && typeof editData.newValue === 'number') {
-            amountChanged = true;
-            newAmount = editData.newValue;
-            updatePayload.amount = editData.newValue;
-          } else if (editData.field === 'category') {
-            updatePayload.category = editData.newValue;
-          } else if (editData.field === 'payment_method') {
-            paymentMethodChanged = true;
-            newPaymentMethod = String(editData.newValue);
-            updatePayload.payment_method = newPaymentMethod;
-          }
-
-          await supabaseAdmin.from('transactions').update(updatePayload).eq('id', lastTx.id);
-
-          // Adjust wallet balances if amount OR payment method changed
-          if (amountChanged || paymentMethodChanged) {
-            // First, revert the old transaction effect from the old wallet
-            if (lastTx.payment_method) {
-              const { data: oldWallet } = await supabaseAdmin
-                .from('wallets').select('id, balance').eq('user_id', userId).ilike('name', lastTx.payment_method).maybeSingle();
-              if (oldWallet) {
-                const revertAdj = lastTx.type === 'expense' ? Number(lastTx.amount) : -Number(lastTx.amount);
-                await supabaseAdmin.from('wallets').update({ balance: Number(oldWallet.balance) + revertAdj }).eq('id', oldWallet.id);
+💸 Wah, transaksi gede banget nih (>30% dari saldomu)! Beneran dari kantong yang sesuai kan? Jangan sampai mengganggu arus kas ya!`;
               }
             }
-
-            // Then, apply the new transaction effect to the new (or same) wallet
-            if (newPaymentMethod) {
-              const { data: currentWallet } = await supabaseAdmin
-                .from('wallets').select('id, balance').eq('user_id', userId).ilike('name', newPaymentMethod).maybeSingle();
-              if (currentWallet) {
-                const applyAdj = lastTx.type === 'expense' ? -newAmount : newAmount;
-                await supabaseAdmin.from('wallets').update({ balance: Number(currentWallet.balance) + applyAdj }).eq('id', currentWallet.id);
+            await reply(message, userId, replyText);
+          }
+          
+          else if (action.type === 'INCOMPLETE_TRANSACTION') {
+            await reply(message, userId, action.replyMessage || "Bisa diperjelas lagi detail transaksinya?");
+          }
+          
+          else if (action.type === 'BALANCE_INQUIRY') {
+            if (action.walletName) {
+              const { data: wallet } = await supabaseAdmin.from('wallets').select('name, balance').eq('user_id', userId).ilike('name', action.walletName).maybeSingle();
+              if (wallet) await reply(message, userId, `Saldo ${wallet.name} kamu saat ini ${formatIDR(Number(wallet.balance))}.`);
+              else await reply(message, userId, `Hmm, aku ga nemu wallet dengan nama "${action.walletName}".`);
+            } else {
+              const { data: wallets } = await supabaseAdmin.from('wallets').select('name, balance').eq('user_id', userId);
+              if (wallets && wallets.length > 0) {
+                let total = 0;
+                const breakdown = wallets.map(w => { total += Number(w.balance); return `- ${w.name}: ${formatIDR(Number(w.balance))}`; }).join('\n');
+                await reply(message, userId, `Total saldo kamu: ${formatIDR(total)}\n\nRincian:\n${breakdown}`);
+              } else {
+                await reply(message, userId, "Kamu belum punya wallet yang tercatat.");
               }
             }
           }
-
-          await reply(message, userId, `Transaksi sudah diupdate! ${financeResponse.replyMessage || ''}`);
-
-        // ──────────────────────────────────────────────
-        // INTENT: Add Wallet(s) — ask confirmation first
-        // ──────────────────────────────────────────────
-        } else if (financeResponse.isAddWallet) {
-          const wallets = financeResponse.wallets;
-          if (!wallets || wallets.length === 0) {
-            await reply(message, userId, "Aku kurang paham wallet apa yang mau ditambahkan. Bisa disebutkan lagi nama dan saldonya?");
-            return;
+          
+          else if (action.type === 'ANALYSIS_INQUIRY') {
+            await reply(message, userId, "Sebentar ya, aku lagi baca catatan keuanganmu...");
+            const { data: wallets } = await supabaseAdmin.from('wallets').select('name, type, balance').eq('user_id', userId);
+            const { data: transactions } = await supabaseAdmin.from('transactions').select('amount, type, category, created_at, payment_method, description').eq('user_id', userId).order('created_at', { ascending: false }).limit(50);
+            const analysis = await analyzeFinances(userId, transactions || [], wallets || []);
+            await reply(message, userId, analysis);
           }
 
-          const lines = wallets.map((w: any) => `- ${w.name} (${w.type}): ${formatIDR(w.balance)}`).join('\n');
-          setPendingAction(userId, { type: 'add_wallets', wallets });
-          await reply(message, userId, `Oke, mau tambahkan wallet berikut?\n${lines}\n\nBalas "iya" untuk konfirmasi.`);
-
-        // ──────────────────────────────────────────────
-        // INTENT: Transfer Between Wallets
-        // ──────────────────────────────────────────────
-        } else if (financeResponse.isTransfer) {
-          const { fromWallet, toWallet, amount } = financeResponse;
-
-          if (!fromWallet || !toWallet || !amount) {
-            await reply(message, userId, "Detail transfernya kurang lengkap. Coba bilang lagi, contoh: 'pindahin 500rb dari BCA ke GoPay'");
-            return;
-          }
-
-          // Find both wallets
-          const { data: srcWallet } = await supabaseAdmin.from('wallets').select('id, name, balance').eq('user_id', userId).ilike('name', fromWallet).maybeSingle();
-          const { data: dstWallet } = await supabaseAdmin.from('wallets').select('id, name, balance').eq('user_id', userId).ilike('name', toWallet).maybeSingle();
-
-          if (!srcWallet) {
-            await reply(message, userId, `Wallet "${fromWallet}" ga ketemu nih. Coba cek lagi nama walletnya.`);
-            return;
-          }
-          if (!dstWallet) {
-            await reply(message, userId, `Wallet "${toWallet}" ga ketemu nih. Coba cek lagi nama walletnya.`);
-            return;
-          }
-
-          if (Number(srcWallet.balance) < amount) {
-            await reply(message, userId, `Saldo ${srcWallet.name} kamu cuma ${formatIDR(Number(srcWallet.balance))}, ga cukup buat transfer ${formatIDR(amount)}.`);
-            return;
-          }
-
-          // Execute transfer
-          await supabaseAdmin.from('wallets').update({ balance: Number(srcWallet.balance) - amount }).eq('id', srcWallet.id);
-          await supabaseAdmin.from('wallets').update({ balance: Number(dstWallet.balance) + amount }).eq('id', dstWallet.id);
-
-          await reply(message, userId, `Transfer berhasil!\n\n${srcWallet.name}: ${formatIDR(Number(srcWallet.balance) - amount)}\n${dstWallet.name}: ${formatIDR(Number(dstWallet.balance) + amount)}`);
-
-        // ──────────────────────────────────────────────
-        // INTENT: Wallet Management (rename/remove)
-        // ──────────────────────────────────────────────
-        } else if (financeResponse.isWalletManagement) {
-          const { action, walletName, newName } = financeResponse;
-
-          if (action === 'remove') {
-            const { data: existing } = await supabaseAdmin.from('wallets').select('id').eq('user_id', userId).ilike('name', walletName).maybeSingle();
-            if (!existing) {
-              await reply(message, userId, `Wallet "${walletName}" ga ketemu.`);
-            } else {
-              await supabaseAdmin.from('wallets').delete().eq('id', existing.id);
-              await reply(message, userId, `Wallet "${walletName}" sudah dihapus.`);
+          else if (action.type === 'TRANSACTION_HISTORY') {
+            const { walletName } = action;
+            let query = supabaseAdmin.from('transactions').select('amount, type, category, created_at, payment_method, description').eq('user_id', userId).order('created_at', { ascending: false }).limit(10);
+            
+            if (walletName) {
+              query = query.ilike('payment_method', `%${walletName}%`);
             }
-
-          } else if (action === 'rename') {
-            const { data: existing } = await supabaseAdmin.from('wallets').select('id').eq('user_id', userId).ilike('name', walletName).maybeSingle();
-            if (!existing) {
-              await reply(message, userId, `Wallet "${walletName}" ga ketemu.`);
-            } else {
-              await supabaseAdmin.from('wallets').update({ name: newName }).eq('id', existing.id);
-              await reply(message, userId, `Wallet "${walletName}" sudah diganti namanya jadi "${newName}".`);
+            
+            const { data: transactions } = await query;
+            if (!transactions || transactions.length === 0) {
+              await reply(message, userId, `Belum ada catatan transaksi${walletName ? ` untuk dompet ${walletName}` : ''}.`);
+              continue;
             }
+            
+            const txLines = transactions.map(tx => {
+              const sign = tx.type === 'expense' ? '-' : '+';
+              const date = new Date(tx.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' });
+              return `[${date}] ${tx.description || tx.category}: ${sign}${formatIDR(Number(tx.amount))} (${tx.payment_method})`;
+            }).join('\n');
+            
+            await reply(message, userId, `Riwayat Transaksi Terakhir${walletName ? ` (${walletName})` : ''}:\n\n${txLines}`);
           }
+          
+          else if (action.type === 'DELETE_REQUEST') {
+            const { data: lastTx } = await supabaseAdmin.from('transactions').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1).maybeSingle();
+            if (!lastTx) { await reply(message, userId, "Kamu belum punya transaksi yang bisa dihapus."); continue; }
+            setPendingAction(userId, { type: 'delete_transaction', transactionId: lastTx.id, transactionDescription: lastTx.description, transactionAmount: Number(lastTx.amount), transactionPaymentMethod: lastTx.payment_method, transactionType: lastTx.type });
+            await reply(message, userId, `Oke, mau hapus transaksi ini?
+- ${lastTx.description || lastTx.category} (${formatIDR(Number(lastTx.amount))} via ${lastTx.payment_method})
 
-        // ──────────────────────────────────────────────
-        // INTENT: Incomplete Transaction (follow-up needed)
-        // ──────────────────────────────────────────────
-        } else if (financeResponse.isFinanceRecord && !financeResponse.isComplete) {
-          await reply(message, userId, financeResponse.replyMessage || "Bisa diperjelas lagi detail transaksinya?");
+Balas "iya" untuk konfirmasi, atau "ga" untuk batal.`);
+          }
+          
+          else if (action.type === 'TRANSFER') {
+            const { fromWallet, toWallet, amount, adminFee } = action;
+            if (!fromWallet || !toWallet || !amount) {
+              await reply(message, userId, "Detail transfernya kurang lengkap.");
+              continue;
+            }
+            const { data: srcWallet } = await supabaseAdmin.from('wallets').select('id, name, balance').eq('user_id', userId).ilike('name', fromWallet).maybeSingle();
+            const { data: dstWallet } = await supabaseAdmin.from('wallets').select('id, name, balance').eq('user_id', userId).ilike('name', toWallet).maybeSingle();
+            if (!srcWallet || !dstWallet) {
+              await reply(message, userId, "Wallet asal atau tujuan tidak ditemukan.");
+              continue;
+            }
+            const totalDeduction = amount + (adminFee || 0);
+            if (Number(srcWallet.balance) < totalDeduction) {
+              await reply(message, userId, `Saldo ${srcWallet.name} ga cukup buat transfer.`);
+              continue;
+            }
+            await supabaseAdmin.from('wallets').update({ balance: Number(srcWallet.balance) - totalDeduction }).eq('id', srcWallet.id);
+            await supabaseAdmin.from('wallets').update({ balance: Number(dstWallet.balance) + amount }).eq('id', dstWallet.id);
+            if (adminFee && adminFee > 0) {
+              await supabaseAdmin.from('transactions').insert({ user_id: userId, amount: adminFee, type: 'expense', category: 'Biaya Admin', description: `Admin transfer ke ${dstWallet.name}`, payment_method: srcWallet.name });
+            }
+            let replyMsg = `Transfer berhasil!
 
-        // ──────────────────────────────────────────────
-        // INTENT: General Chat / Fallback
-        // ──────────────────────────────────────────────
-        } else if (financeResponse.replyMessage) {
-          await reply(message, userId, financeResponse.replyMessage);
-        } else {
-          await reply(message, userId, "Maaf, aku kurang paham maksud kamu. Bisa diulangi?");
+${srcWallet.name}: ${formatIDR(Number(srcWallet.balance) - totalDeduction)}
+${dstWallet.name}: ${formatIDR(Number(dstWallet.balance) + amount)}`;
+            if (adminFee) replyMsg += `
+
+(Termasuk potongan biaya admin ${formatIDR(adminFee)})`;
+            await reply(message, userId, replyMsg);
+          }
+          
+          else if (action.type === 'GENERAL_CHAT') {
+            await reply(message, userId, action.replyMessage || "Ada yang bisa dibantu?");
+          }
         }
       }
 
