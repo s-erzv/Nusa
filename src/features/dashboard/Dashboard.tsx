@@ -222,10 +222,7 @@ export const Dashboard = ({ onSignOut }: DashboardProps) => {
       <header className="sticky top-0 z-50 bg-background/80 backdrop-blur-xl border-b border-border">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            {/* Light mode uses dark.png */}
-            <img src="/dark.png" alt="Nusa Logo" className="h-8 dark:hidden" />
-            {/* Dark mode uses light.png */}
-            <img src="/light.png" alt="Nusa Logo" className="h-8 hidden dark:block" />
+            <img src="/logo.png" alt="Nusa Logo" className="h-8" />
             <span className="text-xl font-bold text-[#FF7A00] dark:text-white hidden sm:block">Nusa Dashboard</span>
           </div>
           <div className="flex items-center gap-4">

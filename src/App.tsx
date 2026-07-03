@@ -3,10 +3,12 @@ import { AnimatePresence } from 'framer-motion';
 import { AuthLayout } from './features/auth/AuthLayout';
 import { LandingView } from './features/auth/LandingView';
 import { MagicLoginView } from './features/auth/MagicLoginView';
+import { LegalView } from './features/auth/LegalView';
+import { VersionView } from './features/auth/VersionView';
 import { useAuth } from './features/auth/useAuth';
 import { Dashboard } from './features/dashboard/Dashboard';
 
-type AppState = 'landing' | 'login' | 'dashboard';
+type AppState = 'landing' | 'login' | 'dashboard' | 'privacy' | 'terms' | 'version';
 
 function App() {
   const auth = useAuth();
@@ -24,6 +26,7 @@ function App() {
           <LandingView 
             key="landing" 
             onLoginClick={() => setAppState('login')} 
+            onNavigate={(page) => setAppState(page as AppState)}
           />
         )}
         
@@ -35,6 +38,21 @@ function App() {
             error={auth.error}
             onStartMagicLogin={auth.startMagicLogin}
             onBack={() => { auth.reset(); setAppState('landing'); }}
+          />
+        )}
+
+        {(appState === 'privacy' || appState === 'terms') && (
+          <LegalView 
+            key={appState}
+            type={appState}
+            onBack={() => setAppState('landing')}
+          />
+        )}
+
+        {appState === 'version' && (
+          <VersionView 
+            key="version"
+            onBack={() => setAppState('landing')}
           />
         )}
       </AnimatePresence>
