@@ -1,4 +1,4 @@
-import { MessageCircle, ArrowRight, Loader2, QrCode } from 'lucide-react';
+import { MessageCircle, ArrowRight, Loader2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 interface LoginViewProps {

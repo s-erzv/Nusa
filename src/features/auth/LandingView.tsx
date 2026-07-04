@@ -1,10 +1,9 @@
 import {
-  ArrowRight, Bot, PieChart, Zap, LineChart, Shield, ChevronRight,
-  GraduationCap, HelpCircle, Activity, Bell, Wallet,
-  Lightbulb, Utensils, Gamepad2, Ambulance, Users, Briefcase,
-  MessageSquare, Database, Smartphone
+  ArrowRight, Bot, Zap, LineChart, Shield, ChevronRight,
+  Activity, Users, MessageSquare, Database, Smartphone
 } from 'lucide-react';
 import { motion } from 'framer-motion';
+import type { Variants } from 'framer-motion';
 import { ThemeToggle } from '../../components/ThemeToggle'; // Sesuaikan path
 
 interface LandingViewProps {
@@ -13,12 +12,12 @@ interface LandingViewProps {
 }
 
 // Clean, snappy animations (No bouncy springs)
-const staggerContainer = {
+const staggerContainer: Variants = {
   hidden: { opacity: 0 },
   show: { opacity: 1, transition: { staggerChildren: 0.1 } }
 };
 
-const fadeUp = {
+const fadeUp: Variants = {
   hidden: { opacity: 0, y: 20 },
   show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: "easeOut" } }
 };
@@ -166,7 +165,7 @@ export const LandingView = ({ onLoginClick, onNavigate }: LandingViewProps) => {
 
             {/* Floating Technical Widget */}
             <motion.div
-              animate={{ y: [-4, 4, -4] }} transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+              animate={{ y: [-4, 4, -4] }} transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" as any }}
               className="absolute -left-10 top-20 z-20 hidden lg:block bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 shadow-xl"
             >
               <div className="flex items-center gap-2 mb-3">

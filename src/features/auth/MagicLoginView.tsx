@@ -1,4 +1,4 @@
-import { Smartphone, ArrowRight, Loader2, ArrowLeft, Send } from 'lucide-react';
+import { Smartphone, Loader2, ArrowLeft, Send } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useEffect } from 'react';
 

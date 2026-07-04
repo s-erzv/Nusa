@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { LogOut, Wallet, ArrowUpRight, ArrowDownRight, Activity, CreditCard, Banknote, Landmark, Download, FileText, FileSpreadsheet } from 'lucide-react';
+import { LogOut, Wallet, ArrowUpRight, ArrowDownRight, Activity, CreditCard, Banknote, Landmark, FileText, FileSpreadsheet } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { ThemeToggle } from '../../components/ThemeToggle';
 import {
@@ -450,14 +450,14 @@ export const Dashboard = ({ onSignOut }: DashboardProps) => {
                       dataKey="value"
                       stroke="none"
                     >
-                      {pieData.map((entry, index) => (
+                      {pieData.map((_entry, index) => (
                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                       ))}
                     </Pie>
                     <Tooltip 
                       contentStyle={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-border)', borderRadius: '8px', color: 'var(--color-text)' }}
                       itemStyle={{ color: 'var(--color-text)' }}
-                      formatter={(value: number) => `Rp ${value.toLocaleString('id-ID')}`}
+                      formatter={(value: any) => `Rp ${Number(value).toLocaleString('id-ID')}`}
                     />
                     <Legend verticalAlign="bottom" height={36}/>
                   </PieChart>
